@@ -1,0 +1,14 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    font-family: 'Plus Jakarta Sans', sans-serif;
+    background-color: #0C0A09;
+  }
+  .font-serif-cinema {
+    font-family: 'Cormorant Garamond', Georgia, serif;
+  }
+  .font-mono-ticket {
+    font-family: 'Space Mono', monospace;
+  }
+}
