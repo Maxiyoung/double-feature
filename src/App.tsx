@@ -12,10 +12,15 @@ import {
   ArrowRight,
   Loader2,
   AlertCircle,
+  RefreshCw,
+  Compass,
+  History,
 } from 'lucide-react';
 import {
   TICKET_THEMES,
-  CURATED_PAIRINGS,
+  CURATED_PROGRAMS,
+  CURATORIAL_LENSES,
+  type CuratorialLens,
   type DoubleFeatureProgram,
   type TicketTheme,
 } from './data/programs';
@@ -25,43 +30,75 @@ import {
   type SearchMovieResult,
 } from './utils/curatorEngine';
 import { drawCinemaTicket } from './utils/ticketPrinter';
+import { computeSchedule } from './utils/schedule';
 
-const INITIAL_PROGRAM: DoubleFeatureProgram = {
-  id: 'init-sorpasso',
-  ...CURATED_PAIRINGS['il sorpasso'],
-  filmA: {
-    title: 'Il Sorpasso',
-    director: 'Dino Risi',
-    year: 1962,
-    durationMin: 105,
-    country: 'Italia',
-    format: '35mm B&N',
-    tagline: 'Un Lancia Aurelia, un feriado de agosto en Roma y dos opuestos en la ruta.',
-  },
-};
+function getErrorMessage(err: unknown, fallback: string): string {
+  return err instanceof Error && err.message ? err.message : fallback;
+}
 
 export default function App() {
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [searchResults, setSearchResults] = useState<SearchMovieResult[]>([]);
+  const [currentMovieSource, setCurrentMovieSource] = useState<SearchMovieResult>({
+    id: 'preset-sorpasso',
+    title: 'Il Sorpasso',
+    castInfo: 'Vittorio Gassman, Jean-Louis Trintignant',
+    year: 1962,
+  });
+
+  const [selectedLens, setSelectedLens] = useState<CuratorialLens>('THEMATIC_MIRROR');
+  const [excludedTitles, setExcludedTitles] = useState<string[]>([
+    "C'eravamo tanto amati",
+  ]);
+  const [historyPrograms, setHistoryPrograms] = useState<DoubleFeatureProgram[]>(
+    CURATED_PROGRAMS
+  );
+
   const [isSearching, setIsSearching] = useState<boolean>(false);
   const [isCurating, setIsCurating] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [fontsReady, setFontsReady] = useState<boolean>(false);
 
-  const [selectedProgram, setSelectedProgram] =
-    useState<DoubleFeatureProgram>(INITIAL_PROGRAM);
+  const [selectedProgram, setSelectedProgram] = useState<DoubleFeatureProgram>(
+    CURATED_PROGRAMS[0]
+  );
   const [ticketTheme, setTicketTheme] = useState<TicketTheme>(TICKET_THEMES[0]);
   const [cinemaName, setCinemaName] = useState<string>('Cineclub Lumière · Sala 1');
-  const [screeningDate, setScreeningDate] = useState<string>('Viernes 20:00 HS');
+  const [screeningDate, setScreeningDate] = useState<string>('Viernes');
+  const [startTime, setStartTime] = useState<string>('20:00');
   const [seatCode, setSeatCode] = useState<string>('FILA G · BUTACA 14');
   const [serialNumber, setSerialNumber] = useState<string>('00482-A');
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
+  const schedule = computeSchedule(
+    startTime,
+    selectedProgram.filmA.durationMin,
+    selectedProgram.filmB.durationMin
+  );
+
   useEffect(() => {
-    if (!canvasRef.current || isCurating) return;
+    let cancelled = false;
+    Promise.allSettled([
+      document.fonts.load('700 36px "Cormorant Garamond"'),
+      document.fonts.load('italic 600 22px "Cormorant Garamond"'),
+      document.fonts.load('italic 400 14px "Cormorant Garamond"'),
+      document.fonts.load('400 12px "Space Mono"'),
+      document.fonts.load('700 12px "Space Mono"'),
+    ]).then(() => {
+      if (!cancelled) setFontsReady(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!canvasRef.current || isCurating || !fontsReady) return;
     drawCinemaTicket(canvasRef.current, selectedProgram, {
       cinemaName,
       screeningDate,
+      startTime,
       seatCode,
       serialNumber,
       theme: ticketTheme,
@@ -70,23 +107,71 @@ export default function App() {
     selectedProgram,
     cinemaName,
     screeningDate,
+    startTime,
     seatCode,
     serialNumber,
     ticketTheme,
     isCurating,
+    fontsReady,
   ]);
 
-  const handleSelectMovieForDoubleFeature = async (movie: SearchMovieResult) => {
+  const addToHistory = (prog: DoubleFeatureProgram) => {
+    setHistoryPrograms((prev) => {
+      const filtered = prev.filter(
+        (item) =>
+          !(
+            item.filmA.title === prog.filmA.title &&
+            item.filmB.title === prog.filmB.title
+          )
+      );
+      return [prog, ...filtered].slice(0, 8);
+    });
+  };
+
+  const handleSelectMovieForDoubleFeature = async (
+    movie: SearchMovieResult,
+    lensOverride?: CuratorialLens
+  ) => {
+    const activeLens = lensOverride || selectedLens;
+    setCurrentMovieSource(movie);
     setIsCurating(true);
     setErrorMsg(null);
     try {
-      const newProgram = await generateDoubleFeature(movie);
+      const newProgram = await generateDoubleFeature(movie, {
+        lens: activeLens,
+      });
       setSelectedProgram(newProgram);
+      setExcludedTitles([newProgram.filmB.title]);
+      addToHistory(newProgram);
       setSerialNumber(
         `${String(Math.floor(1000 + Math.random() * 9000)).padStart(5, '0')}-B`
       );
-    } catch (err: any) {
-      setErrorMsg(err.message || 'Ocurrió un error al generar la función doble.');
+    } catch (err: unknown) {
+      setErrorMsg(getErrorMessage(err, 'Ocurrió un error al generar la función doble.'));
+    } finally {
+      setIsCurating(false);
+    }
+  };
+
+  const handleAnotherPairing = async () => {
+    setIsCurating(true);
+    setErrorMsg(null);
+    try {
+      const nextProgram = await generateDoubleFeature(currentMovieSource, {
+        lens: selectedLens,
+        excludedTitles,
+        forceRefresh: true,
+      });
+      setSelectedProgram(nextProgram);
+      setExcludedTitles((prev) => [...prev, nextProgram.filmB.title]);
+      addToHistory(nextProgram);
+      setSerialNumber(
+        `${String(Math.floor(1000 + Math.random() * 9000)).padStart(5, '0')}-C`
+      );
+    } catch (err: unknown) {
+      setErrorMsg(
+        getErrorMessage(err, 'No se pudo generar otra función en este momento.')
+      );
     } finally {
       setIsCurating(false);
     }
@@ -94,20 +179,27 @@ export default function App() {
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!searchQuery.trim()) return;
+    const cleanQuery = searchQuery.trim();
+    if (!cleanQuery) return;
     setIsSearching(true);
     setErrorMsg(null);
 
     try {
-      const results = await searchMoviesOnline(searchQuery);
+      const results = await searchMoviesOnline(cleanQuery);
       setSearchResults(results);
-      if (results.length > 0) {
-        await handleSelectMovieForDoubleFeature(results[0]);
-      } else {
-        setErrorMsg('No se encontraron películas con ese título en IMDb.');
+      if (results.length === 0) {
+        setErrorMsg('No se encontraron largometrajes con ese título en IMDb.');
+        return;
       }
-    } catch (err: any) {
-      setErrorMsg(err.message || 'Error al buscar la película.');
+
+      const exactMatch = results.find(
+        (r) => r.title.toLowerCase() === cleanQuery.toLowerCase()
+      );
+      if (results.length === 1 || exactMatch) {
+        await handleSelectMovieForDoubleFeature(exactMatch || results[0]);
+      }
+    } catch (err: unknown) {
+      setErrorMsg(getErrorMessage(err, 'Error al buscar la película.'));
     } finally {
       setIsSearching(false);
     }
@@ -118,7 +210,7 @@ export default function App() {
     const link = document.createElement('a');
     link.download = `funcion-doble-${selectedProgram.filmA.title
       .toLowerCase()
-      .replace(/\s+/g, '-')}.png`;
+      .replace(/[^a-z0-9]+/g, '-')}.png`;
     link.href = canvasRef.current.toDataURL('image/png', 1.0);
     link.click();
   };
@@ -150,20 +242,22 @@ export default function App() {
             className="px-4 py-2 rounded-xl text-xs font-bold bg-amber-400 hover:bg-amber-300 text-stone-950 shadow-lg shadow-amber-500/15 flex items-center gap-2 transition-all cursor-pointer"
           >
             <Download className="w-3.5 h-3.5" />
-            <span>Imprimir Boleto PNG</span>
+            <span>Imprimir Boleto PNG (2x HD)</span>
           </button>
         </div>
       </header>
 
       <main className="max-w-7xl mx-auto w-full px-4 py-6 flex-grow grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
         <div className="lg:col-span-5 space-y-5">
-          <section className="bg-stone-900/80 border border-stone-800 rounded-2xl p-5 shadow-xl">
-            <span className="text-[11px] font-mono-ticket uppercase tracking-wider text-amber-400 block mb-1">
-              Paso 1 · Catálogo Global IMDb
-            </span>
-            <h2 className="text-lg font-serif-cinema font-bold text-white mb-3">
-              ¿Qué película viste y te gustó?
-            </h2>
+          <section className="bg-stone-900/80 border border-stone-800 rounded-2xl p-5 shadow-xl space-y-4">
+            <div>
+              <span className="text-[11px] font-mono-ticket uppercase tracking-wider text-amber-400 block mb-1">
+                Paso 1 · Catálogo Global IMDb
+              </span>
+              <h2 className="text-lg font-serif-cinema font-bold text-white">
+                ¿Qué película viste y te gustó?
+              </h2>
+            </div>
 
             <form onSubmit={handleSearch} className="relative flex gap-2">
               <div className="relative flex-grow">
@@ -181,19 +275,49 @@ export default function App() {
                 disabled={isSearching || isCurating}
                 className="px-4 py-2.5 rounded-xl bg-amber-400 hover:bg-amber-300 disabled:opacity-50 text-stone-950 font-bold text-xs cursor-pointer transition-colors shrink-0"
               >
-                {isSearching ? 'Buscando...' : 'Programar'}
+                {isSearching ? 'Buscando...' : 'Buscar'}
               </button>
             </form>
 
+            <div>
+              <span className="text-[11px] text-stone-400 flex items-center gap-1.5 mb-2">
+                <Compass className="w-3.5 h-3.5 text-amber-400" />
+                Enfoque del Programador:
+              </span>
+              <div className="grid grid-cols-2 gap-1.5">
+                {CURATORIAL_LENSES.map((lens) => (
+                  <button
+                    key={lens.id}
+                    type="button"
+                    disabled={isCurating}
+                    onClick={() => {
+                      setSelectedLens(lens.id);
+                      void handleSelectMovieForDoubleFeature(
+                        currentMovieSource,
+                        lens.id
+                      );
+                    }}
+                    className={`px-2.5 py-2 rounded-xl text-[11px] font-medium text-left border transition-all cursor-pointer ${
+                      selectedLens === lens.id
+                        ? 'bg-amber-400/15 border-amber-400 text-amber-200'
+                        : 'bg-stone-950 border-stone-800 text-stone-400 hover:border-stone-700'
+                    }`}
+                  >
+                    {lens.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
             {errorMsg && (
-              <div className="mt-3 p-3 rounded-xl bg-red-950/50 border border-red-800 text-red-200 text-xs flex items-start gap-2">
+              <div className="p-3 rounded-xl bg-red-950/50 border border-red-800 text-red-200 text-xs flex items-start gap-2">
                 <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
                 <span>{errorMsg}</span>
               </div>
             )}
 
             {searchResults.length > 0 && (
-              <div className="mt-3 space-y-1.5 max-h-64 overflow-y-auto pr-1 border-t border-stone-800 pt-3">
+              <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1 border-t border-stone-800 pt-3">
                 <span className="text-[11px] text-stone-400 block">
                   Resultados en IMDb (clic para curar función doble):
                 </span>
@@ -202,7 +326,7 @@ export default function App() {
                     key={item.id}
                     type="button"
                     disabled={isCurating}
-                    onClick={() => handleSelectMovieForDoubleFeature(item)}
+                    onClick={() => void handleSelectMovieForDoubleFeature(item)}
                     className="w-full text-left p-2 rounded-xl bg-stone-950 hover:bg-stone-800/90 border border-stone-800 hover:border-amber-500/50 flex items-center gap-3 transition-all cursor-pointer group"
                   >
                     {item.posterUrl ? (
@@ -221,7 +345,7 @@ export default function App() {
                         {item.title} ({item.year})
                       </p>
                       <p className="text-[11px] text-stone-400 truncate">
-                        {item.director}
+                        Elenco: {item.castInfo}
                       </p>
                     </div>
                     <ArrowRight className="w-4 h-4 text-stone-500 group-hover:text-amber-400 shrink-0" />
@@ -229,6 +353,38 @@ export default function App() {
                 ))}
               </div>
             )}
+
+            <div className="pt-3 border-t border-stone-800/80">
+              <span className="text-[11px] text-stone-400 flex items-center gap-1.5 mb-2">
+                <History className="w-3.5 h-3.5 text-amber-400" />
+                Ciclos de Colección & Historial (0 gasto API):
+              </span>
+              <div className="flex flex-wrap gap-1.5">
+                {historyPrograms.map((prog) => (
+                  <button
+                    key={prog.id}
+                    type="button"
+                    onClick={() => {
+                      setSelectedProgram(prog);
+                      setCurrentMovieSource({
+                        id: prog.id,
+                        title: prog.filmA.title,
+                        castInfo: prog.filmA.director,
+                        year: prog.filmA.year,
+                        posterUrl: prog.filmA.posterUrl,
+                      });
+                    }}
+                    className={`text-[11px] px-2.5 py-1 rounded-lg border cursor-pointer transition-all ${
+                      selectedProgram.id === prog.id
+                        ? 'bg-amber-400/20 border-amber-400 text-amber-200 font-semibold'
+                        : 'bg-stone-950 hover:bg-stone-800 border-stone-800 text-stone-300'
+                    }`}
+                  >
+                    {prog.filmA.title} + {prog.filmB.title}
+                  </button>
+                ))}
+              </div>
+            </div>
           </section>
 
           <section className="bg-stone-900/70 border border-stone-800/90 rounded-2xl p-5 space-y-3">
@@ -281,7 +437,7 @@ export default function App() {
 
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="text-[11px] text-stone-400 block mb-1">Día y Hora</label>
+                <label className="text-[11px] text-stone-400 block mb-1">Día</label>
                 <input
                   type="text"
                   value={screeningDate}
@@ -291,14 +447,26 @@ export default function App() {
               </div>
 
               <div>
-                <label className="text-[11px] text-stone-400 block mb-1">Fila y Butaca</label>
+                <label className="text-[11px] text-stone-400 block mb-1">
+                  Hora de inicio
+                </label>
                 <input
-                  type="text"
-                  value={seatCode}
-                  onChange={(e) => setSeatCode(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl bg-stone-950 border border-stone-800 focus:border-amber-400 text-xs text-stone-100 outline-none font-mono-ticket"
+                  type="time"
+                  value={startTime}
+                  onChange={(e) => setStartTime(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl bg-stone-950 border border-stone-800 focus:border-amber-400 text-xs text-stone-100 outline-none font-mono-ticket [color-scheme:dark]"
                 />
               </div>
+            </div>
+
+            <div>
+              <label className="text-[11px] text-stone-400 block mb-1">Fila y Butaca</label>
+              <input
+                type="text"
+                value={seatCode}
+                onChange={(e) => setSeatCode(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl bg-stone-950 border border-stone-800 focus:border-amber-400 text-xs text-stone-100 outline-none font-mono-ticket"
+              />
             </div>
           </section>
         </div>
@@ -311,7 +479,7 @@ export default function App() {
                 El programador está armando tu Función Doble...
               </h3>
               <p className="text-xs text-stone-400 mt-1 max-w-md">
-                Analizando la puesta en escena, el director y el tono de tu película para encontrar su pareja ideal en 35mm.
+                Analizando la puesta en escena, el director y el tono de «{currentMovieSource.title}» para encontrar su pareja ideal en 35mm.
               </p>
             </div>
           ) : (
@@ -326,41 +494,61 @@ export default function App() {
                       {selectedProgram.cycleTitle}
                     </h2>
                   </div>
-                  <span className="text-xs font-mono-ticket text-stone-400 flex items-center gap-1.5 bg-stone-950 px-3 py-1.5 rounded-lg border border-stone-800">
-                    <Clock className="w-3.5 h-3.5 text-amber-400" />
-                    {selectedProgram.filmA.durationMin +
-                      selectedProgram.filmB.durationMin +
-                      15}{' '}
-                    min (con intervalo)
-                  </span>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void handleAnotherPairing()}
+                      className="px-3 py-1.5 rounded-lg bg-stone-950 hover:bg-stone-800 border border-amber-500/40 text-amber-300 text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-all"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      <span>Otra 2ª Función</span>
+                    </button>
+
+                    <span className="text-xs font-mono-ticket text-stone-400 flex items-center gap-1.5 bg-stone-950 px-3 py-1.5 rounded-lg border border-stone-800">
+                      <Clock className="w-3.5 h-3.5 text-amber-400" />
+                      {`${schedule.totalMin} min · fin ${schedule.end}${
+                        schedule.endsNextDay ? ' (+1 día)' : ''
+                      }`}
+                    </span>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div className="p-4 rounded-xl bg-stone-950/90 border border-stone-800">
-                    <div className="flex items-center justify-between text-[10px] font-mono-ticket uppercase text-stone-400 mb-1">
-                      <span>1ª Función (Tu Elección)</span>
-                      <span>20:00 HS</span>
+                  <div className="p-4 rounded-xl bg-stone-950/90 border border-stone-800 flex gap-3.5">
+                    {selectedProgram.filmA.posterUrl && (
+                      <img
+                        src={selectedProgram.filmA.posterUrl}
+                        alt={selectedProgram.filmA.title}
+                        className="w-16 h-24 object-cover rounded-lg border border-stone-800 shrink-0"
+                      />
+                    )}
+                    <div className="min-w-0 flex-grow">
+                      <div className="flex items-center justify-between text-[10px] font-mono-ticket uppercase text-stone-400 mb-1">
+                        <span>1ª Función</span>
+                        <span>{schedule.firstStart} HS</span>
+                      </div>
+                      <h3 className="text-xl font-serif-cinema font-bold text-white leading-tight">
+                        {selectedProgram.filmA.title}
+                      </h3>
+                      <p className="text-xs text-amber-300/90 font-medium mt-0.5">
+                        Dir. {selectedProgram.filmA.director} ({selectedProgram.filmA.year})
+                      </p>
+                      <p className="text-xs text-stone-400 mt-2 leading-snug">
+                        {selectedProgram.filmA.tagline}
+                      </p>
                     </div>
-                    <h3 className="text-xl font-serif-cinema font-bold text-white">
-                      {selectedProgram.filmA.title}
-                    </h3>
-                    <p className="text-xs text-amber-300/90 font-medium">
-                      Dir. {selectedProgram.filmA.director} ({selectedProgram.filmA.year})
-                    </p>
-                    <p className="text-xs text-stone-400 mt-2 leading-snug">
-                      {selectedProgram.filmA.tagline}
-                    </p>
                   </div>
 
                   <div className="p-4 rounded-xl bg-red-950/20 border-2 border-amber-500/40 relative">
                     <div className="flex items-center justify-between text-[10px] font-mono-ticket uppercase text-amber-400 mb-1">
                       <span>2ª Función Recomendada</span>
-                      <span>22:00 HS</span>
+                      <span>{schedule.secondStart} HS</span>
                     </div>
-                    <h3 className="text-xl font-serif-cinema font-bold text-amber-200">
+                    <h3 className="text-xl font-serif-cinema font-bold text-amber-200 leading-tight">
                       {selectedProgram.filmB.title}
                     </h3>
-                    <p className="text-xs text-amber-400 font-medium">
+                    <p className="text-xs text-amber-400 font-medium mt-0.5">
                       Dir. {selectedProgram.filmB.director} ({selectedProgram.filmB.year})
                     </p>
                     <p className="text-xs text-stone-300 mt-2 leading-snug">
@@ -384,7 +572,7 @@ export default function App() {
                 <div className="flex items-center justify-between mb-3">
                   <span className="text-[11px] font-mono-ticket uppercase tracking-widest text-amber-400 flex items-center gap-1.5">
                     <Sparkles className="w-3.5 h-3.5" />
-                    Boleto Oficial de la Función Doble
+                    Boleto Oficial de la Función Doble (2400×1120px HD)
                   </span>
                   <span className="text-[11px] font-mono-ticket text-stone-500">
                     SERIE #{serialNumber}

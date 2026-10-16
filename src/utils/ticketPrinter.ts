@@ -1,11 +1,68 @@
-import type { DoubleFeatureProgram, TicketTheme } from '../data/programs';
+import type { DoubleFeatureProgram, FilmEntry, TicketTheme } from '../data/programs';
+import { computeSchedule } from './schedule';
 
 export interface TicketCustomData {
   cinemaName: string;
   screeningDate: string;
+  startTime: string;
   seatCode: string;
   serialNumber: string;
   theme: TicketTheme;
+}
+
+const SERIF = '"Cormorant Garamond", Georgia, serif';
+const MONO = '"Space Mono", monospace';
+
+function hashSeed(text: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+function mulberry32(seed: number): () => number {
+  let a = seed;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function drawFittedText(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  maxWidth: number,
+  maxSize: number,
+  minSize: number,
+  buildFont: (size: number) => string
+) {
+  let size = maxSize;
+  ctx.font = buildFont(size);
+  while (size > minSize && ctx.measureText(text).width > maxWidth) {
+    size -= 1;
+    ctx.font = buildFont(size);
+  }
+
+  let out = text;
+  if (ctx.measureText(out).width > maxWidth) {
+    const words = out.split(' ');
+    let current = '';
+    for (const word of words) {
+      const candidate = current ? `${current} ${word}` : word;
+      if (ctx.measureText(`${candidate}…`).width > maxWidth) break;
+      current = candidate;
+    }
+    out = current ? `${current}…` : `${out.slice(0, 14).trimEnd()}…`;
+  }
+
+  ctx.fillText(out, x, y);
 }
 
 export function drawCinemaTicket(
@@ -16,14 +73,26 @@ export function drawCinemaTicket(
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
 
+  const SCALE = 2;
   const W = 1200;
   const H = 560;
-  canvas.width = W;
-  canvas.height = H;
+  canvas.width = W * SCALE;
+  canvas.height = H * SCALE;
+
+  ctx.save();
+  ctx.scale(SCALE, SCALE);
 
   const { theme } = custom;
+  const schedule = computeSchedule(
+    custom.startTime,
+    program.filmA.durationMin,
+    program.filmB.durationMin
+  );
 
-  // 1. Fondo oscuro de mesa alrededor del ticket para que resalten las muescas troqueladas
+  const mono700 = (s: number) => `700 ${s}px ${MONO}`;
+  const mono400 = (s: number) => `400 ${s}px ${MONO}`;
+  const serif700 = (s: number) => `700 ${s}px ${SERIF}`;
+
   ctx.fillStyle = '#0C0A09';
   ctx.fillRect(0, 0, W, H);
 
@@ -32,25 +101,18 @@ export function drawCinemaTicket(
   const tY = margin;
   const tW = W - margin * 2;
   const tH = H - margin * 2;
-  const stubX = tX + tW * 0.74; // Línea donde se corta el talón del acomodador
+  const stubX = tX + tW * 0.74;
 
-  // 2. Cuerpo de papel del boleto
-  ctx.save();
   ctx.fillStyle = theme.paperBg;
   ctx.fillRect(tX, tY, tW, tH);
 
-  // Textura sutil de fibra de papel e imprenta
+  const rand = mulberry32(hashSeed(`${custom.serialNumber}-${theme.id}`));
+  ctx.fillStyle =
+    theme.id === 'midnight-gold' ? 'rgba(255,255,255,0.025)' : 'rgba(28, 25, 23, 0.035)';
   for (let i = 0; i < 3800; i++) {
-    const px = tX + Math.random() * tW;
-    const py = tY + Math.random() * tH;
-    ctx.fillStyle =
-      theme.id === 'midnight-gold'
-        ? 'rgba(255,255,255,0.025)'
-        : 'rgba(28, 25, 23, 0.035)';
-    ctx.fillRect(px, py, 1.5, 1.5);
+    ctx.fillRect(tX + rand() * tW, tY + rand() * tH, 1.5, 1.5);
   }
 
-  // 3. Muescas circulares troqueladas en las 4 esquinas y en la unión del talón
   const punchHole = (cx: number, cy: number, r: number) => {
     ctx.beginPath();
     ctx.arc(cx, cy, r, 0, Math.PI * 2);
@@ -63,11 +125,9 @@ export function drawCinemaTicket(
   punchHole(tX + tW, tY, cornerR);
   punchHole(tX, tY + tH, cornerR);
   punchHole(tX + tW, tY + tH, cornerR);
-  // Muescas del corte troquelado
   punchHole(stubX, tY, 18);
   punchHole(stubX, tY + tH, 18);
 
-  // 4. Marco interior doble estilo boleto antiguo
   const innerPad = 18;
   ctx.strokeStyle = theme.borderInk;
   ctx.lineWidth = 2;
@@ -78,7 +138,6 @@ export function drawCinemaTicket(
     tH - innerPad * 2
   );
 
-  // Línea punteada vertical de troquelado
   ctx.save();
   ctx.setLineDash([8, 8]);
   ctx.strokeStyle = theme.borderInk;
@@ -89,21 +148,24 @@ export function drawCinemaTicket(
   ctx.stroke();
   ctx.restore();
 
-  // 5. Encabezado del Cine (Lado Izquierdo Principal)
   const leftCenter = tX + (stubX - tX) / 2;
   const contentLeft = tX + 44;
   const contentRight = stubX - 44;
+  const contentWidth = contentRight - contentLeft;
 
   ctx.fillStyle = theme.inkAccent;
-  ctx.font = '700 13px "Space Mono", monospace';
   ctx.textAlign = 'center';
-  ctx.fillText(
+  drawFittedText(
+    ctx,
     `★  ${custom.cinemaName.toUpperCase()} · PROGRAMA DOBLE EN CONTINUADO  ★`,
     leftCenter,
-    tY + 52
+    tY + 52,
+    contentWidth,
+    13,
+    9,
+    mono700
   );
 
-  // Línea separadora superior
   ctx.strokeStyle = theme.borderInk;
   ctx.lineWidth = 1;
   ctx.beginPath();
@@ -111,60 +173,66 @@ export function drawCinemaTicket(
   ctx.lineTo(contentRight, tY + 66);
   ctx.stroke();
 
-  // Título del Ciclo
   ctx.fillStyle = theme.inkPrimary;
-  ctx.font = 'italic 600 22px "Cormorant Garamond", Georgia, serif';
-  ctx.fillText(`Ciclo: «${program.cycleTitle}»`, leftCenter, tY + 96);
+  ctx.textAlign = 'center';
+  drawFittedText(
+    ctx,
+    `Ciclo: «${program.cycleTitle}»`,
+    leftCenter,
+    tY + 96,
+    contentWidth,
+    22,
+    14,
+    (s) => `italic 600 ${s}px ${SERIF}`
+  );
 
-  // 6. Bloque FUNCIÓN 1 y FUNCIÓN 2
   const drawFilmBlock = (
     yStart: number,
     slotLabel: string,
     timeLabel: string,
-    title: string,
-    director: string,
-    year: number,
-    format: string,
-    duration: number
+    film: FilmEntry
   ) => {
-    // Badge de horario
+    const badgeText = `${slotLabel} · ${timeLabel}`;
+    ctx.font = mono700(11);
+    const badgeW = ctx.measureText(badgeText).width + 24;
     ctx.fillStyle = theme.inkAccent;
-    ctx.fillRect(contentLeft, yStart, 138, 26);
+    ctx.fillRect(contentLeft, yStart, badgeW, 26);
     ctx.fillStyle = theme.id === 'midnight-gold' ? '#09090B' : '#FAF8F5';
-    ctx.font = '700 11px "Space Mono", monospace';
     ctx.textAlign = 'center';
-    ctx.fillText(`${slotLabel} · ${timeLabel}`, contentLeft + 69, yStart + 17);
+    ctx.fillText(badgeText, contentLeft + badgeW / 2, yStart + 17);
 
-    // Formato y duración a la derecha
     ctx.textAlign = 'right';
     ctx.fillStyle = theme.borderInk;
-    ctx.font = '400 12px "Space Mono", monospace';
-    ctx.fillText(`${format} · ${duration} MIN`, contentRight, yStart + 18);
+    drawFittedText(
+      ctx,
+      `${film.format} · ${film.durationMin} MIN`,
+      contentRight,
+      yStart + 18,
+      contentWidth - badgeW - 20,
+      12,
+      9,
+      mono400
+    );
 
-    // Título de la película
     ctx.textAlign = 'left';
     ctx.fillStyle = theme.inkPrimary;
-    ctx.font = '700 36px "Cormorant Garamond", Georgia, serif';
-    ctx.fillText(title, contentLeft, yStart + 66);
+    drawFittedText(ctx, film.title, contentLeft, yStart + 66, contentWidth, 36, 20, serif700);
 
-    // Director y Año
     ctx.fillStyle = theme.inkAccent;
-    ctx.font = 'italic 600 18px "Cormorant Garamond", Georgia, serif';
-    ctx.fillText(`Dirigida por ${director} (${year})`, contentLeft, yStart + 92);
+    drawFittedText(
+      ctx,
+      `Dirigida por ${film.director} (${film.year})`,
+      contentLeft,
+      yStart + 92,
+      contentWidth,
+      18,
+      12,
+      (s) => `italic 600 ${s}px ${SERIF}`
+    );
   };
 
-  drawFilmBlock(
-    tY + 118,
-    '1ª FUNCIÓN',
-    '20:00 HS',
-    program.filmA.title,
-    program.filmA.director,
-    program.filmA.year,
-    program.filmA.format,
-    program.filmA.durationMin
-  );
+  drawFilmBlock(tY + 118, '1ª FUNCIÓN', `${schedule.firstStart} HS`, program.filmA);
 
-  // Separador de Intervalo
   ctx.strokeStyle = theme.borderInk;
   ctx.lineWidth = 1;
   ctx.beginPath();
@@ -175,49 +243,63 @@ export function drawCinemaTicket(
   ctx.fillStyle = theme.paperBg;
   ctx.fillRect(leftCenter - 110, tY + 226, 220, 20);
   ctx.fillStyle = theme.borderInk;
-  ctx.font = '700 10px "Space Mono", monospace';
+  ctx.font = mono700(10);
   ctx.textAlign = 'center';
   ctx.fillText('— INTERVALO DE 15 MINUTOS —', leftCenter, tY + 240);
 
-  drawFilmBlock(
-    tY + 258,
-    '2ª FUNCIÓN',
-    '22:00 HS',
-    program.filmB.title,
-    program.filmB.director,
-    program.filmB.year,
-    program.filmB.format,
-    program.filmB.durationMin
-  );
+  drawFilmBlock(tY + 258, '2ª FUNCIÓN', `${schedule.secondStart} HS`, program.filmB);
 
-  // Pie del lado izquierdo
   ctx.strokeStyle = theme.borderInk;
   ctx.beginPath();
   ctx.moveTo(contentLeft, tY + 382);
   ctx.lineTo(contentRight, tY + 382);
   ctx.stroke();
 
-  const totalMin = program.filmA.durationMin + program.filmB.durationMin + 15;
-  ctx.textAlign = 'left';
   ctx.fillStyle = theme.inkPrimary;
-  ctx.font = '700 12px "Space Mono", monospace';
-  ctx.fillText(`FECHA: ${custom.screeningDate.toUpperCase()}`, contentLeft, tY + 412);
+  ctx.textAlign = 'left';
+  drawFittedText(
+    ctx,
+    `FECHA: ${custom.screeningDate.toUpperCase()}`,
+    contentLeft,
+    tY + 412,
+    240,
+    12,
+    8,
+    mono700
+  );
 
   ctx.textAlign = 'center';
-  ctx.fillText(`DURACIÓN TOTAL: ${totalMin} MIN`, leftCenter, tY + 412);
+  drawFittedText(
+    ctx,
+    `DURACIÓN TOTAL: ${schedule.totalMin} MIN (FIN ${schedule.end})`,
+    leftCenter,
+    tY + 412,
+    270,
+    11,
+    8,
+    mono700
+  );
 
-  ctx.textAlign = 'right';
   ctx.fillStyle = theme.inkAccent;
-  ctx.fillText(`UBICACIÓN: ${custom.seatCode.toUpperCase()}`, contentRight, tY + 412);
+  ctx.textAlign = 'right';
+  drawFittedText(
+    ctx,
+    `UBICACIÓN: ${custom.seatCode.toUpperCase()}`,
+    contentRight,
+    tY + 412,
+    240,
+    12,
+    8,
+    mono700
+  );
 
-  // Sello circular de filmoteca abajo a la derecha del cuerpo principal
   ctx.save();
   ctx.translate(contentRight - 55, tY + 450);
   ctx.rotate(-0.12);
   ctx.strokeStyle = theme.inkAccent;
   ctx.lineWidth = 1.8;
   ctx.strokeRect(-75, -14, 150, 26);
-  ctx.font = '700 10px "Space Mono", monospace';
+  ctx.font = mono700(10);
   ctx.fillStyle = theme.inkAccent;
   ctx.textAlign = 'center';
   ctx.fillText('COPIA ARCHIVO 35MM', 0, 3);
@@ -225,45 +307,75 @@ export function drawCinemaTicket(
 
   ctx.textAlign = 'left';
   ctx.fillStyle = theme.borderInk;
-  ctx.font = 'italic 400 14px "Cormorant Garamond", Georgia, serif';
-  ctx.fillText(
-    `«${program.themeAxis.slice(0, 78)}${program.themeAxis.length > 78 ? '...' : ''}»`,
+  drawFittedText(
+    ctx,
+    `«${program.themeAxis}»`,
     contentLeft,
-    tY + 455
+    tY + 455,
+    contentWidth - 140,
+    14,
+    10,
+    (s) => `italic 400 ${s}px ${SERIF}`
   );
 
-  // 7. Lado Derecho: Talón Troquelado del Acomodador (Stub)
   const stubCenter = stubX + (tX + tW - stubX) / 2;
+  const stubTextWidth = tX + tW - stubX - 36 - 28;
 
   ctx.strokeStyle = theme.borderInk;
   ctx.lineWidth = 1.5;
-  ctx.strokeRect(
-    stubX + 18,
-    tY + innerPad,
-    tX + tW - stubX - 36,
-    tH - innerPad * 2
-  );
+  ctx.strokeRect(stubX + 18, tY + innerPad, tX + tW - stubX - 36, tH - innerPad * 2);
 
   ctx.textAlign = 'center';
   ctx.fillStyle = theme.inkAccent;
-  ctx.font = '700 12px "Space Mono", monospace';
+  ctx.font = mono700(12);
   ctx.fillText('TALÓN DE CONTROL', stubCenter, tY + 55);
 
   ctx.fillStyle = theme.inkPrimary;
-  ctx.font = '700 28px "Space Mono", monospace';
-  ctx.fillText(custom.seatCode.toUpperCase(), stubCenter, tY + 100);
+  drawFittedText(
+    ctx,
+    custom.seatCode.toUpperCase(),
+    stubCenter,
+    tY + 100,
+    stubTextWidth,
+    26,
+    12,
+    mono700
+  );
 
-  ctx.font = '400 11px "Space Mono", monospace';
   ctx.fillStyle = theme.borderInk;
-  ctx.fillText(custom.screeningDate.toUpperCase(), stubCenter, tY + 125);
+  drawFittedText(
+    ctx,
+    `${custom.screeningDate.toUpperCase()} · ${schedule.firstStart} HS`,
+    stubCenter,
+    tY + 125,
+    stubTextWidth,
+    11,
+    8,
+    mono400
+  );
 
-  // Resúmenes cortos en el talón
   ctx.fillStyle = theme.inkPrimary;
-  ctx.font = '700 18px "Cormorant Garamond", Georgia, serif';
-  ctx.fillText('I. ' + program.filmA.title.slice(0, 20), stubCenter, tY + 185);
-  ctx.fillText('II. ' + program.filmB.title.slice(0, 20), stubCenter, tY + 225);
+  drawFittedText(
+    ctx,
+    `I. ${program.filmA.title}`,
+    stubCenter,
+    tY + 185,
+    stubTextWidth,
+    18,
+    11,
+    serif700
+  );
+  drawFittedText(
+    ctx,
+    `II. ${program.filmB.title}`,
+    stubCenter,
+    tY + 225,
+    stubTextWidth,
+    18,
+    11,
+    serif700
+  );
 
-  // Código de barras simulado estilo imprenta
   const barStartX = stubCenter - 82;
   const barY = tY + 280;
   let cursorX = barStartX;
@@ -278,12 +390,13 @@ export function drawCinemaTicket(
     cursorX += w + 2.5;
   }
 
-  ctx.font = '700 12px "Space Mono", monospace';
+  ctx.font = mono700(12);
   ctx.fillStyle = theme.inkAccent;
+  ctx.textAlign = 'center';
   ctx.fillText(`Nº ${custom.serialNumber}`, stubCenter, tY + 375);
 
   ctx.fillStyle = theme.borderInk;
-  ctx.font = '400 10px "Space Mono", monospace';
+  ctx.font = mono400(10);
   ctx.fillText('VÁLIDO PARA 2 FUNCIONES', stubCenter, tY + 435);
   ctx.fillText('CONSERVE ESTE BOLETO', stubCenter, tY + 452);
 
