@@ -13,18 +13,9 @@ export interface SearchMovieResult {
   posterUrl?: string;
 }
 
-interface ImdbSuggestionItem {
-  id?: string;
-  l?: string;
-  s?: string;
-  y?: number;
-  q?: string;
-  qid?: string;
-  i?: { imageUrl?: string };
-}
-
-interface ImdbSuggestionResponse {
-  d?: ImdbSuggestionItem[];
+interface SearchApiResponse {
+  results?: SearchMovieResult[];
+  error?: string;
 }
 
 interface CurateApiResponse {
@@ -93,15 +84,6 @@ export function saveHistoryPrograms(programs: DoubleFeatureProgram[]): void {
   }
 }
 
-function normalizeAsciiPrefix(text: string): string {
-  const deaccented = text
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase();
-  const match = deaccented.match(/[a-z0-9]/);
-  return match ? match[0] : 'a';
-}
-
 export async function searchMoviesOnline(
   query: string,
   signal?: AbortSignal
@@ -109,36 +91,16 @@ export async function searchMoviesOnline(
   const clean = query.trim();
   if (!clean) return [];
 
-  const firstChar = normalizeAsciiPrefix(clean);
-  const imdbUrl = `https://v3.sg.media-imdb.com/suggestion/${firstChar}/${encodeURIComponent(
-    clean.toLowerCase()
-  )}.json`;
+  const res = await fetch(`/api/search?q=${encodeURIComponent(clean)}`, {
+    signal,
+  });
+  const data = (await res.json().catch(() => ({}))) as SearchApiResponse;
 
-  const res = await fetch(imdbUrl, { signal });
   if (!res.ok) {
-    throw new Error('Error al conectar con el catálogo de IMDb.');
+    throw new Error(data.error || 'Error al conectar con el catálogo de películas.');
   }
 
-  const data = (await res.json()) as ImdbSuggestionResponse;
-  if (!Array.isArray(data.d)) return [];
-
-  return data.d
-    .filter(
-      (item) =>
-        (item.qid === 'movie' || item.q === 'feature') &&
-        typeof item.l === 'string' &&
-        typeof item.y === 'number'
-    )
-    .slice(0, 8)
-    .map(
-      (item): SearchMovieResult => ({
-        id: String(item.id || `m-${item.l}-${item.y}`),
-        title: String(item.l),
-        castInfo: item.s ? String(item.s) : 'Archivo 35mm',
-        year: Number(item.y),
-        posterUrl: item.i?.imageUrl,
-      })
-    );
+  return Array.isArray(data.results) ? data.results : [];
 }
 
 async function resolvePosterUrl(

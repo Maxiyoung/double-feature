@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import type { IncomingMessage } from 'node:http';
 import { handleCurateRequest } from './api/curate.ts';
+import { handleSearchRequest } from './api/search.ts';
 
 function readRequestBody(req: IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
@@ -42,6 +43,23 @@ function localApiPlugin(mode: string): Plugin {
       ) => void
     ) => void;
   }) => {
+    middlewares.use('/api/search', async (req, res) => {
+      if (req.method !== 'GET') {
+        res.statusCode = 405;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.end(JSON.stringify({ error: 'Método no permitido. Usá GET.' }));
+        return;
+      }
+
+      const urlObj = new URL(req.url || '/', 'http://localhost');
+      const q = urlObj.searchParams.get('q') || '';
+      const result = await handleSearchRequest(q);
+
+      res.statusCode = result.status;
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.end(JSON.stringify(result.body));
+    });
+
     middlewares.use('/api/curate', async (req, res, next) => {
       if (req.url && req.url !== '/' && !req.url.startsWith('?')) {
         next();

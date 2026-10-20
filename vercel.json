@@ -3,6 +3,9 @@
   "functions": {
     "api/curate.ts": {
       "maxDuration": 30
+    },
+    "api/search.ts": {
+      "maxDuration": 15
     }
   },
   "headers": [
