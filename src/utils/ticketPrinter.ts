@@ -33,6 +33,38 @@ function mulberry32(seed: number): () => number {
   };
 }
 
+let cachedNoiseKey = '';
+let cachedNoiseCanvas: HTMLCanvasElement | null = null;
+
+function getPaperNoiseCanvas(
+  width: number,
+  height: number,
+  themeId: string
+): HTMLCanvasElement | null {
+  const key = `${width}x${height}-${themeId}`;
+  if (cachedNoiseKey === key && cachedNoiseCanvas) {
+    return cachedNoiseCanvas;
+  }
+
+  if (typeof document === 'undefined') return null;
+  const offscreen = document.createElement('canvas');
+  offscreen.width = width;
+  offscreen.height = height;
+  const nCtx = offscreen.getContext('2d');
+  if (!nCtx) return null;
+
+  const rand = mulberry32(hashSeed(`paper-grain-${themeId}`));
+  nCtx.fillStyle =
+    themeId === 'midnight-gold' ? 'rgba(255,255,255,0.025)' : 'rgba(28, 25, 23, 0.035)';
+  for (let i = 0; i < 3800; i++) {
+    nCtx.fillRect(rand() * width, rand() * height, 1.5, 1.5);
+  }
+
+  cachedNoiseKey = key;
+  cachedNoiseCanvas = offscreen;
+  return offscreen;
+}
+
 function drawFittedText(
   ctx: CanvasRenderingContext2D,
   text: string,
@@ -76,8 +108,10 @@ export function drawCinemaTicket(
   const SCALE = 2;
   const W = 1200;
   const H = 560;
-  canvas.width = W * SCALE;
-  canvas.height = H * SCALE;
+  if (canvas.width !== W * SCALE || canvas.height !== H * SCALE) {
+    canvas.width = W * SCALE;
+    canvas.height = H * SCALE;
+  }
 
   ctx.save();
   ctx.scale(SCALE, SCALE);
@@ -106,11 +140,9 @@ export function drawCinemaTicket(
   ctx.fillStyle = theme.paperBg;
   ctx.fillRect(tX, tY, tW, tH);
 
-  const rand = mulberry32(hashSeed(`${custom.serialNumber}-${theme.id}`));
-  ctx.fillStyle =
-    theme.id === 'midnight-gold' ? 'rgba(255,255,255,0.025)' : 'rgba(28, 25, 23, 0.035)';
-  for (let i = 0; i < 3800; i++) {
-    ctx.fillRect(tX + rand() * tW, tY + rand() * tH, 1.5, 1.5);
+  const noiseLayer = getPaperNoiseCanvas(tW, tH, theme.id);
+  if (noiseLayer) {
+    ctx.drawImage(noiseLayer, tX, tY, tW, tH);
   }
 
   const punchHole = (cx: number, cy: number, r: number) => {
@@ -182,7 +214,7 @@ export function drawCinemaTicket(
     tY + 96,
     contentWidth,
     22,
-    14,
+    13,
     (s) => `italic 600 ${s}px ${SERIF}`
   );
 
@@ -216,12 +248,12 @@ export function drawCinemaTicket(
 
     ctx.textAlign = 'left';
     ctx.fillStyle = theme.inkPrimary;
-    drawFittedText(ctx, film.title, contentLeft, yStart + 66, contentWidth, 36, 20, serif700);
+    drawFittedText(ctx, film.title, contentLeft, yStart + 66, contentWidth, 36, 16, serif700);
 
     ctx.fillStyle = theme.inkAccent;
     drawFittedText(
       ctx,
-      `Dirigida por ${film.director} (${film.year})`,
+      `Dirigida por ${film.director} (${film.year}) · ${film.country}`,
       contentLeft,
       yStart + 92,
       contentWidth,
@@ -362,7 +394,7 @@ export function drawCinemaTicket(
     tY + 185,
     stubTextWidth,
     18,
-    11,
+    10,
     serif700
   );
   drawFittedText(
@@ -372,7 +404,7 @@ export function drawCinemaTicket(
     tY + 225,
     stubTextWidth,
     18,
-    11,
+    10,
     serif700
   );
 

@@ -27,6 +27,8 @@ import {
 import {
   searchMoviesOnline,
   generateDoubleFeature,
+  loadHistoryPrograms,
+  saveHistoryPrograms,
   type SearchMovieResult,
 } from './utils/curatorEngine';
 import { drawCinemaTicket } from './utils/ticketPrinter';
@@ -34,6 +36,10 @@ import { computeSchedule } from './utils/schedule';
 
 function getErrorMessage(err: unknown, fallback: string): string {
   return err instanceof Error && err.message ? err.message : fallback;
+}
+
+function getMovieKey(title: string): string {
+  return title.trim().toLowerCase();
 }
 
 export default function App() {
@@ -47,11 +53,11 @@ export default function App() {
   });
 
   const [selectedLens, setSelectedLens] = useState<CuratorialLens>('THEMATIC_MIRROR');
-  const [excludedTitles, setExcludedTitles] = useState<string[]>([
-    "C'eravamo tanto amati",
-  ]);
-  const [historyPrograms, setHistoryPrograms] = useState<DoubleFeatureProgram[]>(
-    CURATED_PROGRAMS
+  const [excludedByMovie, setExcludedByMovie] = useState<Record<string, string[]>>({
+    'il sorpasso': ["C'eravamo tanto amati"],
+  });
+  const [historyPrograms, setHistoryPrograms] = useState<DoubleFeatureProgram[]>(() =>
+    loadHistoryPrograms()
   );
 
   const [isSearching, setIsSearching] = useState<boolean>(false);
@@ -60,7 +66,7 @@ export default function App() {
   const [fontsReady, setFontsReady] = useState<boolean>(false);
 
   const [selectedProgram, setSelectedProgram] = useState<DoubleFeatureProgram>(
-    CURATED_PROGRAMS[0]
+    () => loadHistoryPrograms()[0] || CURATED_PROGRAMS[0]
   );
   const [ticketTheme, setTicketTheme] = useState<TicketTheme>(TICKET_THEMES[0]);
   const [cinemaName, setCinemaName] = useState<string>('Cineclub Lumière · Sala 1');
@@ -70,6 +76,7 @@ export default function App() {
   const [serialNumber, setSerialNumber] = useState<string>('00482-A');
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const curationAbortRef = useRef<AbortController | null>(null);
 
   const schedule = computeSchedule(
     startTime,
@@ -94,15 +101,25 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    return () => {
+      curationAbortRef.current?.abort();
+    };
+  }, []);
+
+  useEffect(() => {
     if (!canvasRef.current || isCurating || !fontsReady) return;
-    drawCinemaTicket(canvasRef.current, selectedProgram, {
-      cinemaName,
-      screeningDate,
-      startTime,
-      seatCode,
-      serialNumber,
-      theme: ticketTheme,
+    const rafId = requestAnimationFrame(() => {
+      if (!canvasRef.current) return;
+      drawCinemaTicket(canvasRef.current, selectedProgram, {
+        cinemaName,
+        screeningDate,
+        startTime,
+        seatCode,
+        serialNumber,
+        theme: ticketTheme,
+      });
     });
+    return () => cancelAnimationFrame(rafId);
   }, [
     selectedProgram,
     cinemaName,
@@ -115,16 +132,27 @@ export default function App() {
     fontsReady,
   ]);
 
+  const recordExcludedTitle = (movieTitle: string, suggestedBTitle: string) => {
+    const key = getMovieKey(movieTitle);
+    setExcludedByMovie((prev) => {
+      const existing = prev[key] || [];
+      if (existing.includes(suggestedBTitle)) return prev;
+      return { ...prev, [key]: [...existing, suggestedBTitle] };
+    });
+  };
+
   const addToHistory = (prog: DoubleFeatureProgram) => {
     setHistoryPrograms((prev) => {
       const filtered = prev.filter(
         (item) =>
           !(
-            item.filmA.title === prog.filmA.title &&
-            item.filmB.title === prog.filmB.title
+            item.filmA.title.toLowerCase() === prog.filmA.title.toLowerCase() &&
+            item.filmB.title.toLowerCase() === prog.filmB.title.toLowerCase()
           )
       );
-      return [prog, ...filtered].slice(0, 8);
+      const next = [prog, ...filtered].slice(0, 10);
+      saveHistoryPrograms(next);
+      return next;
     });
   };
 
@@ -132,6 +160,10 @@ export default function App() {
     movie: SearchMovieResult,
     lensOverride?: CuratorialLens
   ) => {
+    curationAbortRef.current?.abort();
+    const controller = new AbortController();
+    curationAbortRef.current = controller;
+
     const activeLens = lensOverride || selectedLens;
     setCurrentMovieSource(movie);
     setIsCurating(true);
@@ -139,41 +171,60 @@ export default function App() {
     try {
       const newProgram = await generateDoubleFeature(movie, {
         lens: activeLens,
+        signal: controller.signal,
       });
+      if (controller.signal.aborted) return;
+
       setSelectedProgram(newProgram);
-      setExcludedTitles([newProgram.filmB.title]);
+      recordExcludedTitle(movie.title, newProgram.filmB.title);
       addToHistory(newProgram);
       setSerialNumber(
         `${String(Math.floor(1000 + Math.random() * 9000)).padStart(5, '0')}-B`
       );
     } catch (err: unknown) {
+      if (err instanceof Error && err.name === 'AbortError') return;
       setErrorMsg(getErrorMessage(err, 'Ocurrió un error al generar la función doble.'));
     } finally {
-      setIsCurating(false);
+      if (curationAbortRef.current === controller) {
+        setIsCurating(false);
+      }
     }
   };
 
   const handleAnotherPairing = async () => {
+    curationAbortRef.current?.abort();
+    const controller = new AbortController();
+    curationAbortRef.current = controller;
+
     setIsCurating(true);
     setErrorMsg(null);
+    const key = getMovieKey(currentMovieSource.title);
+    const currentExcluded = excludedByMovie[key] || [selectedProgram.filmB.title];
+
     try {
       const nextProgram = await generateDoubleFeature(currentMovieSource, {
         lens: selectedLens,
-        excludedTitles,
+        excludedTitles: currentExcluded,
         forceRefresh: true,
+        signal: controller.signal,
       });
+      if (controller.signal.aborted) return;
+
       setSelectedProgram(nextProgram);
-      setExcludedTitles((prev) => [...prev, nextProgram.filmB.title]);
+      recordExcludedTitle(currentMovieSource.title, nextProgram.filmB.title);
       addToHistory(nextProgram);
       setSerialNumber(
         `${String(Math.floor(1000 + Math.random() * 9000)).padStart(5, '0')}-C`
       );
     } catch (err: unknown) {
+      if (err instanceof Error && err.name === 'AbortError') return;
       setErrorMsg(
         getErrorMessage(err, 'No se pudo generar otra función en este momento.')
       );
     } finally {
-      setIsCurating(false);
+      if (curationAbortRef.current === controller) {
+        setIsCurating(false);
+      }
     }
   };
 
@@ -366,8 +417,9 @@ export default function App() {
                     type="button"
                     onClick={() => {
                       setSelectedProgram(prog);
+                      recordExcludedTitle(prog.filmA.title, prog.filmB.title);
                       setCurrentMovieSource({
-                        id: prog.id,
+                        id: `m-${prog.filmA.title.toLowerCase()}-${prog.filmA.year}`,
                         title: prog.filmA.title,
                         castInfo: prog.filmA.director,
                         year: prog.filmA.year,
@@ -540,20 +592,29 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div className="p-4 rounded-xl bg-red-950/20 border-2 border-amber-500/40 relative">
-                    <div className="flex items-center justify-between text-[10px] font-mono-ticket uppercase text-amber-400 mb-1">
-                      <span>2ª Función Recomendada</span>
-                      <span>{schedule.secondStart} HS</span>
+                  <div className="p-4 rounded-xl bg-red-950/20 border-2 border-amber-500/40 flex gap-3.5 relative">
+                    {selectedProgram.filmB.posterUrl && (
+                      <img
+                        src={selectedProgram.filmB.posterUrl}
+                        alt={selectedProgram.filmB.title}
+                        className="w-16 h-24 object-cover rounded-lg border border-amber-500/30 shrink-0"
+                      />
+                    )}
+                    <div className="min-w-0 flex-grow">
+                      <div className="flex items-center justify-between text-[10px] font-mono-ticket uppercase text-amber-400 mb-1">
+                        <span>2ª Función Recomendada</span>
+                        <span>{schedule.secondStart} HS</span>
+                      </div>
+                      <h3 className="text-xl font-serif-cinema font-bold text-amber-200 leading-tight">
+                        {selectedProgram.filmB.title}
+                      </h3>
+                      <p className="text-xs text-amber-400 font-medium mt-0.5">
+                        Dir. {selectedProgram.filmB.director} ({selectedProgram.filmB.year})
+                      </p>
+                      <p className="text-xs text-stone-300 mt-2 leading-snug">
+                        {selectedProgram.filmB.tagline}
+                      </p>
                     </div>
-                    <h3 className="text-xl font-serif-cinema font-bold text-amber-200 leading-tight">
-                      {selectedProgram.filmB.title}
-                    </h3>
-                    <p className="text-xs text-amber-400 font-medium mt-0.5">
-                      Dir. {selectedProgram.filmB.director} ({selectedProgram.filmB.year})
-                    </p>
-                    <p className="text-xs text-stone-300 mt-2 leading-snug">
-                      {selectedProgram.filmB.tagline}
-                    </p>
                   </div>
                 </div>
 
