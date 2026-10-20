@@ -211,7 +211,7 @@ Tu tarea:
 2. Seleccionar UNA Segunda Función (Programa Doble) real y extraordinaria que dialogue profunda, estética, temática o emocionalmente con "${title}". PROHIBIDO elegir secuelas directas o películas obvias de la misma franquicia.
 3. Escribir en "curatorNote" un párrafo apasionante en español (de 3 a 4 oraciones) explicando exactamente POR QUÉ estas dos películas funcionan juntas en una función doble.`;
 
-  const model = (env.GEMINI_MODEL || env.VITE_GEMINI_MODEL || 'gemini-2.5-flash').trim();
+  const model = (env.GEMINI_MODEL || env.VITE_GEMINI_MODEL || 'gemini-flash-latest').trim();
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 25000);
